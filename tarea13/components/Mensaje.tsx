@@ -1,14 +1,27 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 import React from "react";
-import { Message } from "@/types";
+import type { CustomMessage } from "@/types";
 import { User, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface MessageItemProps {
-  m: Message;
+  m: CustomMessage;
 }
 
 export default function MessageItem({ m }: MessageItemProps) {
+  const content =
+    m.parts
+      ?.filter((p) => p.type === "text")
+      .map((p: any) => p.text)
+      .join("") ?? "";
+
+  const toolResults =
+    m.parts
+      ?.filter((p) => p.type === "tool-result")
+      .map((p: any) => JSON.stringify(p.content, null, 2)) ?? [];
+
+  const createdAt = (m as any).createdAt || new Date().toISOString();
   const isUser = m.role === "user";
 
   return (
@@ -31,12 +44,7 @@ export default function MessageItem({ m }: MessageItemProps) {
         )}
       </div>
 
-      <div
-        className={cn(
-          "flex flex-col max-w-[80%]",
-          isUser ? "items-end" : "items-start"
-        )}
-      >
+      <div className={cn("flex flex-col max-w-[80%]", isUser ? "items-end" : "items-start")}>
         <div
           className={cn(
             "px-4 py-3 rounded-2xl shadow-sm",
@@ -46,11 +54,19 @@ export default function MessageItem({ m }: MessageItemProps) {
           )}
         >
           <div className="prose prose-sm dark:prose-invert max-w-none">
-            <MessageContent content={m.content} />
+            <MessageContent content={content} />
+
+            {toolResults.length > 0 && (
+              <div className="mt-2 p-2 bg-slate-200 dark:bg-slate-700 rounded text-xs overflow-auto">
+                <strong>Tool Results:</strong>
+                <pre>{toolResults.join("\n\n")}</pre>
+              </div>
+            )}
           </div>
         </div>
+
         <span className="text-xs text-slate-500 mt-1 px-1">
-          {new Date(m.createdAt).toLocaleTimeString("es-ES", {
+          {new Date(createdAt).toLocaleTimeString("es-ES", {
             hour: "2-digit",
             minute: "2-digit",
           })}
@@ -61,46 +77,31 @@ export default function MessageItem({ m }: MessageItemProps) {
 }
 
 function MessageContent({ content }: { content: string }) {
-  const lines = content.split("\n");
+  // 🟢 Dividimos entre bloques normales y bloques de código
+  const blocks = content.split(/```/g);
 
   return (
-    <div className="space-y-2">
-      {lines.map((line, i) => {
-        if (line.trim().startsWith("```")) {
-          return null;
-        }
+    <div className="space-y-3">
+      {blocks.map((block, i) => {
+        // 🟣 Si el índice es impar → bloque de código
+        const isCode = i % 2 === 1;
 
-        if (line.trim().startsWith("- ")) {
+        if (isCode) {
           return (
-            <li key={i} className="ml-4">
-              {line.substring(2)}
-            </li>
+            <pre
+              key={i}
+              className="bg-slate-200 dark:bg-slate-700 p-3 rounded text-xs overflow-auto"
+            >
+              <code>{block}</code>
+            </pre>
           );
         }
 
-        if (line.match(/^\d+\./)) {
-          return (
-            <li key={i} className="ml-4 list-decimal">
-              {line.substring(line.indexOf(".") + 1).trim()}
-            </li>
-          );
-        }
-
-        const boldText = line.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-        const italicText = boldText.replace(/\*(.*?)\*/g, "<em>$1</em>");
-        const codeText = italicText.replace(/`(.*?)`/g, '<code class="bg-slate-200 dark:bg-slate-700 px-1 rounded">$1</code>');
-
-        if (line.trim() === "") {
-          return <br key={i} />;
-        }
-
-        return (
-          <p
-            key={i}
-            className="leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: codeText }}
-          />
-        );
+        // 🔵 Texto normal
+        return block
+          .split("\n")
+          .filter((line) => line.trim() !== "")
+          .map((line, j) => <p key={`${i}-${j}`}>{line}</p>);
       })}
     </div>
   );

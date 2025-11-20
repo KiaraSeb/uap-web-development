@@ -1,47 +1,38 @@
+// components/InputBox.tsx
 "use client";
-import React, { useState } from "react";
+import React from "react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Send } from "lucide-react";
 
 interface InputBoxProps {
-  onSend: (text: string) => void;
-  disabled?: boolean;
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSend: (text: string) => void; // Recibe string, no event
+  disabled: boolean;
 }
 
-export default function InputBox({ onSend, disabled }: InputBoxProps) {
-  const [value, setValue] = useState("");
-
-  function handleSubmit(e?: React.FormEvent) {
-    e?.preventDefault();
-    const text = value.trim();
-    if (!text) return;
-    onSend(text);
-    setValue("");
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+export default function InputBox({ value, onChange, onSend, disabled }: InputBoxProps) {
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      onSend(value); // Envía el value como string
     }
-  }
+  };
 
   return (
-    <form onSubmit={handleSubmit} className="flex gap-2 items-end">
-      <Textarea
-        aria-label="Escribe un mensaje"
+    <div className="flex gap-2">
+      <Input
         value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        disabled={disabled}
+        onChange={onChange}
+        onKeyPress={handleKeyPress}
         placeholder="Escribe tu mensaje..."
-        className="min-h-[60px] max-h-[200px] resize-none"
-        rows={2}
+        disabled={disabled}
+        className="flex-1"
       />
-      <Button type="submit" disabled={disabled || !value.trim()} size="icon" className="h-[60px] w-[60px]">
-        <Send className="h-5 w-5" />
+      <Button onClick={() => onSend(value)} disabled={disabled || !value.trim()}>
+        <Send className="h-4 w-4" />
       </Button>
-    </form>
+    </div>
   );
 }

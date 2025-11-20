@@ -1,121 +1,54 @@
+// components/Chat.tsx
 "use client";
-import React, { useState, useRef, useEffect } from "react";
-import { useChat } from "@/hooks/useChat";
+import React, { useRef, useEffect, useCallback } from "react";
+import { useEnhancedChat } from "@/hooks/useChat";
 import MessageItem from "./Mensaje";
 import InputBox from "./InputBox";
-import { v4 as uuidv4 } from "uuid";
-import { Message } from "@/types";
+import { TaskList } from "./TaskList";
+import { StatsDisplay } from "./StatsDisplay";
+import type { CustomMessage } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Trash2, Square, MessageSquare } from "lucide-react";
 
 export default function Chat() {
-  const { messages, addMessage, setLastMessageContent, clear } = useChat();
-  const [isTyping, setIsTyping] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const {
+    messages,
+    input,
+    setInput,
+    onSubmit,
+    isLoading,
+    tasks,
+    stats,
+    clear,
+    stop
+  } = useEnhancedChat();
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, isTyping]);
+  }, [messages, tasks, stats, isLoading]);
 
-  async function sendMessage(text: string) {
-    const safeText = text.slice(0, 2000);
-    const userMsg: Message = {
-      id: uuidv4(),
-      role: "user",
-      content: safeText,
-      createdAt: new Date().toISOString(),
-    };
-    addMessage(userMsg);
-
-    const assistantId = uuidv4();
-    const assistantMsg: Message = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      createdAt: new Date().toISOString(),
-    };
-    addMessage(assistantMsg);
-
-    setIsTyping(true);
-
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        body: JSON.stringify({
-          messages: [
-            ...messages.map((m) => ({ role: m.role, content: m.content })),
-            { role: userMsg.role, content: userMsg.content },
-          ],
-        }),
-        headers: { "Content-Type": "application/json" },
-        signal: ac.signal,
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Error en la API del servidor");
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No hay stream disponible");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let assistantText = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-
-        for (const part of parts) {
-          if (!part.startsWith("data:")) continue;
-          const jsonStr = part.replace(/^data:\s*/, "").trim();
-          if (jsonStr === "[DONE]") continue;
-
-          try {
-            const data = JSON.parse(jsonStr);
-            const delta = data?.choices?.[0]?.delta?.content;
-            if (delta) {
-              assistantText += delta;
-              setLastMessageContent(assistantId, assistantText);
-            }
-          } catch {
-          }
-        }
-      }
-
-      setIsTyping(false);
-    } catch (err: unknown) {
-      console.error("Chat error:", err);
-      setIsTyping(false);
-      const errorMessage = err instanceof Error ? err.message : "unknown";
-      setLastMessageContent(assistantId, `⚠️ Error: ${errorMessage}`);
-    } finally {
-      abortRef.current = null;
-    }
-  }
-
+  // Limpiar conversación
   function handleClear() {
     clear();
-    abortRef.current?.abort();
   }
 
+  // Detener streaming
   function handleStop() {
-    abortRef.current?.abort();
-    setIsTyping(false);
+    stop();
   }
+
+  // Enviar mensaje manual
+  const handleSend = useCallback(() => {
+    if (input.trim()) {
+      onSubmit();
+    }
+  }, [input, onSubmit]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-120px)] max-w-4xl mx-auto">
@@ -123,10 +56,11 @@ export default function Chat() {
         <div className="flex items-center justify-between p-4 border-b bg-slate-50 dark:bg-slate-900">
           <div className="flex items-center gap-2">
             <MessageSquare className="h-5 w-5 text-blue-600" />
-            <h2 className="font-semibold text-lg">Tu amigo el Chat</h2>
+            <h2 className="font-semibold text-lg">Tu AI Todo Manager</h2>
           </div>
+
           <div className="flex gap-2">
-            {isTyping && (
+            {isLoading && (
               <Button
                 onClick={handleStop}
                 variant="outline"
@@ -137,6 +71,7 @@ export default function Chat() {
                 Detener
               </Button>
             )}
+
             <Button
               onClick={handleClear}
               variant="outline"
@@ -150,17 +85,38 @@ export default function Chat() {
         </div>
 
         <ScrollArea className="flex-1 p-6" ref={scrollRef}>
-          {messages.length === 0 && (
+          {/* Estado inicial */}
+          {messages.length === 0 && !isLoading && (
             <div className="flex flex-col items-center justify-center h-full text-center text-slate-500 dark:text-slate-400">
               <MessageSquare className="h-16 w-16 mb-4 opacity-20" />
-              <p className="text-lg font-medium">Empieza una conversación</p>
-              <p className="text-sm mt-2">Escribe un mensaje para comenzar</p>
+              <p className="text-lg font-medium">Empieza a gestionar tus tareas</p>
+              <p className="text-sm mt-2">Escribe un mensaje como: Agrega tarea comprar leche</p>
             </div>
           )}
-          {messages.map((m) => (
+
+          {/* Mensajes */}
+          {messages.map((m: CustomMessage) => (
             <MessageItem key={m.id} m={m} />
           ))}
-          {isTyping && (
+
+          {/* Lista de tareas */}
+          {tasks.length > 0 && (
+            <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+              <h3 className="font-medium mb-2">Tareas Actuales:</h3>
+              <TaskList tasks={tasks} />
+            </div>
+          )}
+
+          {/* Estadísticas */}
+          {stats && (
+            <div className="mt-4 p-4 bg-green-50 rounded-lg">
+              <h3 className="font-medium mb-2">Estadísticas:</h3>
+              <StatsDisplay stats={stats} />
+            </div>
+          )}
+
+          {/* Loader */}
+          {isLoading && (
             <div className="flex gap-3 mb-6">
               <div className="flex items-center justify-center w-8 h-8 rounded-full bg-slate-700 flex-shrink-0">
                 <div className="flex gap-1">
@@ -169,12 +125,19 @@ export default function Chat() {
                   <div className="w-2 h-2 bg-white rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
                 </div>
               </div>
+              <span className="text-sm text-slate-400">Pensando...</span>
             </div>
           )}
         </ScrollArea>
 
+        {/* Input */}
         <div className="p-4 border-t bg-slate-50 dark:bg-slate-900">
-          <InputBox onSend={sendMessage} disabled={isTyping} />
+          <InputBox
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onSend={handleSend}
+            disabled={isLoading}
+          />
         </div>
       </Card>
     </div>

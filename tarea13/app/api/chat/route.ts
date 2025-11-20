@@ -1,45 +1,62 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { createOpenAI } from "@ai-sdk/openai";
+import { streamText, createTextStreamResponse } from "ai";
+import { tools } from "@/lib/tools";
 
-const OPENROUTER_BASE = process.env.OPENROUTER_BASE_URL;
+const OPENROUTER_BASE =
+  process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "anthropic/claude-3-haiku";
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL ?? "anthropic/claude-3-haiku";
 
 if (!OPENROUTER_KEY) {
   console.warn("⚠️ OPENROUTER_API_KEY no encontrado en env");
 }
 
+// ----------------------
+// RATE LIMITING
+// ----------------------
 const RATE_MAP = new Map<string, { count: number; ts: number }>();
-const WINDOW_MS = 60_000; // 1 minuto
+const WINDOW_MS = 60_000;
 const MAX_PER_WINDOW = 30;
 
-
-function ipFromReq(req: NextRequest): string {
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0].trim();
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp) return realIp.trim();
-  return "unknown";
+function getIP(req: NextRequest) {
+  return (
+    req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown"
+  );
 }
 
-
-function sanitizeInput(s: string) {
-  return s
+function sanitize(text: string) {
+  return text
     .replace(/<script.*?>.*?<\/script>/gi, "")
     .replace(/[\x00-\x1F\x7F]/g, "")
     .slice(0, 6000);
 }
 
+// ----------------------
+// OPENROUTER CLIENT
+// ----------------------
+const aiClient = createOpenAI({
+  apiKey: OPENROUTER_KEY,
+  baseURL: OPENROUTER_BASE,
+});
+
+// ----------------------
+// POST HANDLER
+// ----------------------
 export async function POST(req: NextRequest) {
   if (!OPENROUTER_KEY) {
     return NextResponse.json(
-      { error: "Server misconfigured: OpenRouter API key missing" },
+      { error: "Missing API key" },
       { status: 500 }
     );
   }
 
-  const ip = ipFromReq(req);
+  // ---- rate limit ----
+  const ip = getIP(req);
   const now = Date.now();
   const entry = RATE_MAP.get(ip) ?? { count: 0, ts: now };
 
@@ -48,85 +65,76 @@ export async function POST(req: NextRequest) {
     entry.ts = now;
   }
 
-  entry.count += 1;
+  entry.count++;
   RATE_MAP.set(ip, entry);
 
   if (entry.count > MAX_PER_WINDOW) {
-    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+    return NextResponse.json(
+      { error: "Rate limit exceeded" },
+      { status: 429 }
+    );
   }
 
+  // ---- parse JSON ----
   let body;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid JSON" },
+      { status: 400 }
+    );
   }
 
-  const rawMessages = Array.isArray(body.messages) ? body.messages : [];
-  const messages = rawMessages.map((m: any) => ({
-    role: String(m.role || "user"),
-    content: sanitizeInput(String(m.content || ""))
+  if (!Array.isArray(body.messages)) {
+    return NextResponse.json(
+      { error: "Messages must be an array" },
+      { status: 400 }
+    );
+  }
+
+  const messages = body.messages.map((m: any) => ({
+    role:
+      m.role === "user" ||
+      m.role === "assistant" ||
+      m.role === "system"
+        ? m.role
+        : "user",
+    content: sanitize(String(m.content ?? "")),
   }));
 
-  if (messages.length === 0) {
-    return NextResponse.json({ error: "No messages provided" }, { status: 400 });
+  if (messages.length === 0 || !messages.at(-1)?.content) {
+    return NextResponse.json(
+      { error: "Empty message" },
+      { status: 400 }
+    );
   }
 
-  const payload = {
-    model: OPENROUTER_MODEL,
-    messages: messages.map((m: any) => ({
-      role: m.role,
-      content: m.content
-    })),
-    stream: true
-  };
-
   try {
-    const upstream = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_KEY}`
-      },
-      body: JSON.stringify(payload)
+    // Tools → formato objeto
+    const toolsObject = Object.fromEntries(
+      tools.map((t: any) => [t.name, t])
+    );
+
+    const result = await streamText({
+      model: aiClient(OPENROUTER_MODEL),
+      messages,
+      tools: toolsObject,
+      toolChoice: "auto",
     });
 
-    if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text();
-      return NextResponse.json({ error: "Upstream error", detail: text }, { status: 502 });
-    }
+    const response = createTextStreamResponse(result);
+    response.headers.set(
+      "Content-Type",
+      "text/event-stream; charset=utf-8"
+    );
+    response.headers.set("Cache-Control", "no-store");
 
-    const reader = upstream.body.getReader();
-
-    const stream = new ReadableStream({
-      async pull(controller) {
-        try {
-          const { done, value } = await reader.read();
-          if (done) {
-            controller.close();
-            return;
-          }
-          controller.enqueue(value);
-        } catch (err) {
-          controller.error(err);
-        }
-      },
-      cancel() {
-        try {
-          reader.cancel();
-        } catch {}
-      }
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-store"
-      }
-    });
+    return response;
   } catch (err: any) {
+    console.error("❌ streamText error:", err);
     return NextResponse.json(
-      { error: "Server error", detail: String(err.message) },
+      { error: "AI stream error", detail: err.message },
       { status: 500 }
     );
   }
