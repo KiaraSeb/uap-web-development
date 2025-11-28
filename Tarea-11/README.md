@@ -1,4 +1,4 @@
-# 📱 Proyecto Expo React Native
+# 📱 Proyecto Expo React Native 
 
 Este proyecto es una aplicación móvil desarrollada con **Expo** y **React Native**.  
 La aplicación incluye funcionalidades como manejo de cámara, galería y compatibilidad tanto en **iOS**, **Android** y **Web**.  
